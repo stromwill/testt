@@ -1,114 +1,100 @@
-name: RDP_TIPSUNIX
+name: RDP_TIPSUNIX_PRO_EDITION
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  rdp-admin-pro:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 360
 
     steps:
-      - name: Configure Core RDP Settings
+        - name: 🚀 System Profiling & Optimization
+        id: profile
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
-
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          echo "::group::Optimizing Windows"
+          # RDP & Admin Config
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
+          Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "Wallpaper" -Value ""
+          netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
           
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+          # FIX RAM: Menjumlahkan semua keping RAM sebelum dibagi
+          $cpu = (Get-CimInstance Win32_Processor).Name
+          $rawRam = (Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum).Sum
+          $ramGB = [Math]::Round($rawRam / 1GB)
+          $ram = "[$ramGB GB]"
+          
+          echo "CPU=$cpu" >> $env:GITHUB_OUTPUT
+          echo "RAM=$ram" >> $env:GITHUB_OUTPUT
+          echo "::endgroup::"
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
-          Restart-Service -Name TermService -Force
-
-      - name: Create RDP User with Secure Password
+      - name: 🔑 Secure Credential Generation
+        id: user_gen
         run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
+          $pass = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 20 | ForEach-Object {[char]$_})
+          echo "::add-mask::$pass"
+          $secPass = ConvertTo-SecureString $pass -AsPlainText -Force
+          New-LocalUser -Name "Pro_Admin" -Password $secPass -AccountNeverExpires -Description "RDP Admin"
+          Add-LocalGroupMember -Group "Administrators" -Member "Pro_Admin"
+          echo "PASS=$pass" >> $env:GITHUB_OUTPUT
 
-      - name: Install Tailscale
+      - name: 🌐 Tailscale Mesh Deployment
+        id: ts
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
+          echo "::group::Installing Tailscale"
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "ts.msi"
+          Start-Process msiexec.exe -ArgumentList "/i", "ts.msi", "/quiet", "/norestart" -Wait
           
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          # Up with AuthKey
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=PRO-$(Get-Random)
+          
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          if (!$tsIP) { throw "Tailscale IP failed to assign!" }
+          echo "IP=$tsIP" >> $env:GITHUB_OUTPUT
+          echo "::endgroup::"
 
-      - name: Establish Tailscale Connection
+      - name: 📤 Professional Telegram Notification
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          $msg = @"
+          💎 *PRO RDP SESSION ACTIVE*
+          ━━━━━━━━━━━━━━━━━━━━
+          🚀 *Host:* ``${{ steps.ts.outputs.IP }}``
+          👤 *User:* ``Pro_Admin``
+          🔑 *Pass:* ``${{ steps.user_gen.outputs.PASS }}``
+          ━━━━━━━━━━━━━━━━━━━━
+          💻 *Specs:* ${{ steps.profile.outputs.CPU }}
+          🧠 *RAM:* ${{ steps.profile.outputs.RAM }}
+          🌍 *Region:* ${{ steps.profile.outputs.REGION }}
+          ━━━━━━━━━━━━━━━━━━━━
+          ⚡ @TipsUNIX - Status: *ADMIN*
+          "@
           
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Verify RDP Accessibility
-        run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity successful!"
+          $body = @{ chat_id="${{ secrets.TELEGRAM_CHAT_ID }}"; text=$msg; parse_mode="MarkdownV2" } | ConvertTo-Json
+          Invoke-RestMethod -Uri "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" -Method Post -Body $body -ContentType "application/json"
 
-      - name: Maintain Connection
+      - name: ⏳ Keep-Alive & Monitoring
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "http://www.youtube.com/@TipsUNIX"
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
-          
-          # Keep runner active indefinitely (or until manually cancelled)
+          $start = Get-Date
+          Write-Host "Monitoring session... (Max 6 Hours)"
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
+            $now = Get-Date
+            $diff = $now - $start
+            if ($diff.TotalMinutes -ge 350) { 
+               Write-Host "Timeout approaching. Cleaning up..."
+               break 
+            }
+            Write-Host "Session running: $($diff.ToString('hh\:mm\:ss')) | Status: OK"
+            Start-Sleep -Seconds 60
+          }
+
+- name: 🧹 Auto-Cleanup (Always Run)
+        if: always()
+        run: |
+          $tsPath = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (Test-Path $tsPath) {
+              Write-Host "Disconnecting Tailscale..."
+              & $tsPath logout
+          } else {
+              Write-Host "Tailscale not installed, skipping logout."
           }
