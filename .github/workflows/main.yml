@@ -1,4 +1,4 @@
-name: RDP_TIPSUNIX_PRO_EDITION
+name: RDP_PRO_FINAL_FIXED
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 360
 
     steps:
-        - name: 🚀 System Profiling & Optimization
+      - name: 🚀 System Profiling & Optimization
         id: profile
         run: |
           echo "::group::Optimizing Windows"
@@ -19,14 +19,18 @@ jobs:
           Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "Wallpaper" -Value ""
           netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
           
-          # FIX RAM: Menjumlahkan semua keping RAM sebelum dibagi
+          # FIX ERROR RAM: Menggunakan Measure-Object untuk menjumlahkan semua stick RAM
           $cpu = (Get-CimInstance Win32_Processor).Name
-          $rawRam = (Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum).Sum
-          $ramGB = [Math]::Round($rawRam / 1GB)
+          $totalRam = (Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum).Sum
+          $ramGB = [Math]::Round($totalRam / 1GB)
           $ram = "[$ramGB GB]"
+          
+          # Ambil Region (Gunakan Try-Catch agar tidak error jika internet delay)
+          try { $region = (Invoke-RestMethod ipinfo.io).region } catch { $region = "Unknown" }
           
           echo "CPU=$cpu" >> $env:GITHUB_OUTPUT
           echo "RAM=$ram" >> $env:GITHUB_OUTPUT
+          echo "REGION=$region" >> $env:GITHUB_OUTPUT
           echo "::endgroup::"
 
       - name: 🔑 Secure Credential Generation
@@ -35,7 +39,7 @@ jobs:
           $pass = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 20 | ForEach-Object {[char]$_})
           echo "::add-mask::$pass"
           $secPass = ConvertTo-SecureString $pass -AsPlainText -Force
-          New-LocalUser -Name "Pro_Admin" -Password $secPass -AccountNeverExpires -Description "RDP Admin"
+          New-LocalUser -Name "Pro_Admin" -Password $secPass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "Pro_Admin"
           echo "PASS=$pass" >> $env:GITHUB_OUTPUT
 
@@ -46,11 +50,9 @@ jobs:
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "ts.msi"
           Start-Process msiexec.exe -ArgumentList "/i", "ts.msi", "/quiet", "/norestart" -Wait
           
-          # Up with AuthKey
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=PRO-$(Get-Random)
           
           $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          if (!$tsIP) { throw "Tailscale IP failed to assign!" }
           echo "IP=$tsIP" >> $env:GITHUB_OUTPUT
           echo "::endgroup::"
 
@@ -63,7 +65,7 @@ jobs:
           👤 *User:* ``Pro_Admin``
           🔑 *Pass:* ``${{ steps.user_gen.outputs.PASS }}``
           ━━━━━━━━━━━━━━━━━━━━
-          💻 *Specs:* ${{ steps.profile.outputs.CPU }}
+          💻 *CPU:* ${{ steps.profile.outputs.CPU }}
           🧠 *RAM:* ${{ steps.profile.outputs.RAM }}
           🌍 *Region:* ${{ steps.profile.outputs.REGION }}
           ━━━━━━━━━━━━━━━━━━━━
@@ -76,19 +78,13 @@ jobs:
       - name: ⏳ Keep-Alive & Monitoring
         run: |
           $start = Get-Date
-          Write-Host "Monitoring session... (Max 6 Hours)"
           while ($true) {
-            $now = Get-Date
-            $diff = $now - $start
-            if ($diff.TotalMinutes -ge 350) { 
-               Write-Host "Timeout approaching. Cleaning up..."
-               break 
-            }
-            Write-Host "Session running: $($diff.ToString('hh\:mm\:ss')) | Status: OK"
+            $diff = (Get-Date) - $start
+            if ($diff.TotalMinutes -ge 350) { break }
             Start-Sleep -Seconds 60
           }
 
-- name: 🧹 Auto-Cleanup (Always Run)
+      - name: 🧹 Auto-Cleanup (Always Run)
         if: always()
         run: |
           $tsPath = "$env:ProgramFiles\Tailscale\tailscale.exe"
@@ -96,5 +92,5 @@ jobs:
               Write-Host "Disconnecting Tailscale..."
               & $tsPath logout
           } else {
-              Write-Host "Tailscale not installed, skipping logout."
+              Write-Host "Tailscale not installed. Cleanup skipped."
           }
